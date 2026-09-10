@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Self, cast
 
 from aiohttp import ClientConnectionError, ClientError, ClientSession, ClientTimeout
-from aiohttp.hdrs import METH_DELETE, METH_GET, METH_POST, METH_PUT
+from aiohttp.hdrs import METH_DELETE, METH_GET, METH_POST
 import orjson
 from yarl import URL
 
@@ -17,6 +17,7 @@ from .exceptions import (
     SmartThingsCommandError,
     SmartThingsConnectionError,
     SmartThingsForbiddenError,
+    SmartThingsNotFoundError,
     SmartThingsSinkError,
 )
 from .models import (
@@ -40,6 +41,10 @@ from .models import (
     RoomResponse,
     Scene,
     SceneResponse,
+    SmartApp,
+    SmartAppListResponse,
+    SmartAppOAuthRegenerateResponse,
+    SmartAppSummary,
     Status,
     Subscription,
 )
@@ -160,6 +165,10 @@ class SmartThings:
             msg = "Forbidden"
             raise SmartThingsForbiddenError(msg)
 
+        if response.status == 404:
+            msg = "Not found"
+            raise SmartThingsNotFoundError(msg)
+
         if response.status in {409, 422}:
             raise SmartThingsCommandError(ErrorResponse.from_json(text))
 
@@ -177,15 +186,6 @@ class SmartThings:
     ) -> str:
         """Handle a POST request to SmartThings."""
         return await self._request(METH_POST, uri, data=data, params=params)
-
-    async def _put(
-        self,
-        uri: str,
-        data: dict[str, Any] | None = None,
-        params: dict[str, Any] | None = None,
-    ) -> str:
-        """Handle a PUT request to SmartThings."""
-        return await self._request(METH_PUT, uri, data=data, params=params)
 
     async def _delete(
         self,
@@ -691,6 +691,52 @@ class SmartThings:
         await self._delete(f"subscriptions/{subscription_id}")
         if self.new_subscription_id_callback:
             self.new_subscription_id_callback(None)
+
+    async def create_app(
+        self,
+        app_name: str,
+        display_name: str,
+        description: str,
+        redirect_uris: list[str],
+        scopes: list[str],
+    ) -> SmartApp:
+        """Create an API-only SmartApp with OAuth-In credentials."""
+        resp = await self._post(
+            "smartapps",
+            data={
+                "appName": app_name,
+                "displayName": display_name,
+                "description": description,
+                "appType": "API_ONLY",
+                "classifications": ["CONNECTED_SERVICE"],
+                "apiOnly": {},
+                "oauth": {
+                    "clientName": display_name,
+                    "scope": scopes,
+                    "redirectUris": redirect_uris,
+                },
+            },
+        )
+        return SmartApp.from_json(resp)
+
+    async def list_apps(self) -> list[SmartAppSummary]:
+        """List API-only SmartApps for the authenticated account."""
+        resp = await self._get("smartapps")
+        return SmartAppListResponse.from_json(resp).items
+
+    async def regenerate_oauth(
+        self, app_id: str, client_name: str, scopes: list[str]
+    ) -> SmartAppOAuthRegenerateResponse:
+        """Regenerate the OAuth ClientId and Secret for this appId."""
+        resp = await self._post(
+            f"smartapps/{app_id}/oauth/generate",
+            data={"clientName": client_name, "scope": scopes},
+        )
+        return SmartAppOAuthRegenerateResponse.from_json(resp)
+
+    async def delete_app(self, app_id: str) -> None:
+        """Delete an app."""
+        await self._delete(f"smartapps/{app_id}")
 
     async def close(self) -> None:
         """Close open client session."""
