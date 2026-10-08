@@ -5,7 +5,11 @@ from aioresponses import aioresponses
 import pytest
 from syrupy import SnapshotAssertion
 
-from pysmartthings import SmartThings, SmartThingsNotFoundError
+from pysmartthings import (
+    SmartThings,
+    SmartThingsNotFoundError,
+    SmartThingsQuotaExceededError,
+)
 from . import load_fixture
 
 from .const import HEADERS, MOCK_URL
@@ -131,3 +135,19 @@ async def test_delete_app_not_found(
     responses.delete(f"{MOCK_URL}/smartapps/{APP_ID}", status=404)
     with pytest.raises(SmartThingsNotFoundError):
         await client.delete_app(APP_ID)
+
+
+async def test_create_app_quota_exceeded(
+    client: SmartThings,
+    responses: aioresponses,
+) -> None:
+    """Test creating an app when the quota is exceeded."""
+    responses.post(f"{MOCK_URL}/smartapps", status=402)
+    with pytest.raises(SmartThingsQuotaExceededError):
+        await client.create_app(
+            app_name=f"homeassistant-{APP_ID}",
+            display_name="Home Assistant",
+            description="Home Assistant",
+            redirect_uris=["https://my.home-assistant.io/redirect/oauth"],
+            scopes=["r:devices:*"],
+        )

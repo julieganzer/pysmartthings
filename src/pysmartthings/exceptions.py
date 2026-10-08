@@ -31,6 +31,10 @@ class SmartThingsForbiddenError(SmartThingsError):
     """SmartThings forbidden exception."""
 
 
+class SmartThingsQuotaExceededError(SmartThingsError):
+    """SmartThings quota exceeded exception."""
+
+
 class SmartThingsCommandError(SmartThingsError):
     """SmartThings command exception."""
 

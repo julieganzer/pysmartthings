@@ -10,6 +10,7 @@ from .exceptions import (
     SmartThingsError,
     SmartThingsForbiddenError,
     SmartThingsNotFoundError,
+    SmartThingsQuotaExceededError,
     SmartThingsRateLimitError,
     SmartThingsSinkError,
 )
@@ -90,6 +91,7 @@ __all__ = [
     "SmartThingsError",
     "SmartThingsForbiddenError",
     "SmartThingsNotFoundError",
+    "SmartThingsQuotaExceededError",
     "SmartThingsRateLimitError",
     "SmartThingsSinkError",
     "Status",

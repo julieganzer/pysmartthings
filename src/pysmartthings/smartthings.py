@@ -7,17 +7,18 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Self, cast
 
 from aiohttp import ClientConnectionError, ClientError, ClientSession, ClientTimeout
-from aiohttp.hdrs import METH_DELETE, METH_GET, METH_POST
+from aiohttp.hdrs import METH_DELETE, METH_GET, METH_POST, METH_PUT
 import orjson
 from yarl import URL
 
-from .const import API_BASE, API_VERSION, LOGGER, SSE_READ_TIMEOUT
+from .const import API_BASE, LOGGER, SSE_READ_TIMEOUT
 from .exceptions import (
     SmartThingsAuthenticationFailedError,
     SmartThingsCommandError,
     SmartThingsConnectionError,
     SmartThingsForbiddenError,
     SmartThingsNotFoundError,
+    SmartThingsQuotaExceededError,
     SmartThingsSinkError,
 )
 from .models import (
@@ -119,7 +120,7 @@ class SmartThings:
         await self.refresh_token()
 
         headers = {
-            "Accept": f"application/vnd.smartthings+json;v={API_VERSION}",
+            "Accept": "application/json",
             **self._get_headers(),
         }
 
@@ -161,6 +162,10 @@ class SmartThings:
             msg = "Authentication failed with SmartThings"
             raise SmartThingsAuthenticationFailedError(msg)
 
+        if response.status == 402:
+            msg = "Quota exceeded"
+            raise SmartThingsQuotaExceededError(msg)
+
         if response.status == 403:
             msg = "Forbidden"
             raise SmartThingsForbiddenError(msg)
@@ -186,6 +191,15 @@ class SmartThings:
     ) -> str:
         """Handle a POST request to SmartThings."""
         return await self._request(METH_POST, uri, data=data, params=params)
+
+    async def _put(
+        self,
+        uri: str,
+        data: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> str:
+        """Handle a PUT request to SmartThings."""
+        return await self._request(METH_PUT, uri, data=data, params=params)
 
     async def _delete(
         self,
@@ -347,7 +361,7 @@ class SmartThings:
         ).joinpath(f"v1/apps/{smart_app_id}")
 
         headers = {
-            "Accept": f"application/vnd.smartthings+json;v={API_VERSION}",
+            "Accept": "application/json",
             "Authorization": f"Bearer {personal_access_token}",
         }
 
@@ -364,7 +378,7 @@ class SmartThings:
         ).joinpath(f"v1/installedapps/{installed_app_id}")
 
         headers = {
-            "Accept": f"application/vnd.smartthings+json;v={API_VERSION}",
+            "Accept": "application/json",
             "Authorization": f"Bearer {personal_access_token}",
         }
 
@@ -382,7 +396,7 @@ class SmartThings:
         ).joinpath(f"v1/installedapps/{installed_app_id}")
 
         headers = {
-            "Accept": f"application/vnd.smartthings+json;v={API_VERSION}",
+            "Accept": "application/json",
             "Authorization": f"Bearer {personal_access_token}",
         }
 
@@ -465,17 +479,13 @@ class SmartThings:
             callback
         )
 
-    async def create_subscription(
-        self, location_id: str, installed_app_id: str
-    ) -> Subscription:
+    async def create_subscription(self, location_id: str) -> Subscription:
         """Create a subscription."""
         try:
             resp = await self._post(
-                "subscriptions",
+                "v1/sse/subscriptions",
                 data={
                     "name": "My Home Assistant sub",
-                    "version": API_VERSION,
-                    "clientDeviceId": f"iapp_{installed_app_id}",
                     "subscriptionFilters": [
                         {
                             "type": "LOCATIONIDS",
@@ -625,7 +635,6 @@ class SmartThings:
     async def subscribe(  # noqa: PLR0912, PLR0915  # pylint: disable=too-many-statements,too-many-branches
         self,
         location_id: str,
-        installed_app_id: str,
         initial_subscription: Subscription | None = None,
     ) -> None:
         """Create a subscription."""
@@ -643,9 +652,7 @@ class SmartThings:
                     subscription_id = initial_subscription.subscription_id
                     subscription_url = initial_subscription.registration_url
                 else:
-                    subscription = await self.create_subscription(
-                        location_id, installed_app_id
-                    )
+                    subscription = await self.create_subscription(location_id)
                     subscription_id = subscription.subscription_id
                     subscription_url = subscription.registration_url
                     LOGGER.debug("Subscription created: %s", subscription)
@@ -688,7 +695,7 @@ class SmartThings:
     async def delete_subscription(self, subscription_id: str) -> None:
         """Delete a subscription."""
         LOGGER.debug("Deleting subscription: %s", subscription_id)
-        await self._delete(f"subscriptions/{subscription_id}")
+        await self._delete(f"v1/sse/subscriptions/{subscription_id}")
         if self.new_subscription_id_callback:
             self.new_subscription_id_callback(None)
 
