@@ -5,6 +5,7 @@ from .capability import Capability
 from .command import CAPABILITY_COMMANDS, Command
 from .exceptions import (
     SmartThingsAuthenticationFailedError,
+    SmartThingsBlockedError,
     SmartThingsCommandError,
     SmartThingsConnectionError,
     SmartThingsError,
@@ -12,6 +13,7 @@ from .exceptions import (
     SmartThingsNotFoundError,
     SmartThingsQuotaExceededError,
     SmartThingsRateLimitError,
+    SmartThingsServerError,
     SmartThingsSinkError,
 )
 from .models import (
@@ -86,6 +88,7 @@ __all__ = [
     "SmartAppSummary",
     "SmartThings",
     "SmartThingsAuthenticationFailedError",
+    "SmartThingsBlockedError",
     "SmartThingsCommandError",
     "SmartThingsConnectionError",
     "SmartThingsError",
@@ -93,6 +96,7 @@ __all__ = [
     "SmartThingsNotFoundError",
     "SmartThingsQuotaExceededError",
     "SmartThingsRateLimitError",
+    "SmartThingsServerError",
     "SmartThingsSinkError",
     "Status",
     "Subscription",

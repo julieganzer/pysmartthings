@@ -23,6 +23,14 @@ class SmartThingsRateLimitError(SmartThingsError):
     """SmartThings rate limit exception."""
 
 
+class SmartThingsBlockedError(SmartThingsError):
+    """SmartThings has flagged this client as problematic."""
+
+
+class SmartThingsServerError(SmartThingsError):
+    """SmartThings server error exception."""
+
+
 class SmartThingsSinkError(SmartThingsError):
     """SmartThings sink exception."""
 
@@ -40,6 +48,7 @@ class SmartThingsCommandError(SmartThingsError):
 
     def __init__(self, error: ErrorResponse) -> None:
         """Create a new instance of the command error."""
+        self.error = error
         super().__init__(self.to_string(error))
 
     def to_string(self, error: ErrorResponse) -> str:

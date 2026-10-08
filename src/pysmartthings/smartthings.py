@@ -14,11 +14,14 @@ from yarl import URL
 from .const import API_BASE, DEFAULT_USER_AGENT, LOGGER, SSE_READ_TIMEOUT
 from .exceptions import (
     SmartThingsAuthenticationFailedError,
+    SmartThingsBlockedError,
     SmartThingsCommandError,
     SmartThingsConnectionError,
     SmartThingsForbiddenError,
     SmartThingsNotFoundError,
     SmartThingsQuotaExceededError,
+    SmartThingsRateLimitError,
+    SmartThingsServerError,
     SmartThingsSinkError,
 )
 from .models import (
@@ -186,6 +189,18 @@ class SmartThings:
 
         if response.status in {409, 422}:
             raise SmartThingsCommandError(ErrorResponse.from_json(text))
+
+        if response.status == 418:
+            msg = "SmartThings has flagged this client as problematic"
+            raise SmartThingsBlockedError(msg)
+
+        if response.status == 429:
+            msg = "Rate limit exceeded"
+            raise SmartThingsRateLimitError(msg)
+
+        if response.status >= 500:
+            msg = f"SmartThings server error ({response.status})"
+            raise SmartThingsServerError(msg)
 
         return text
 
@@ -513,6 +528,10 @@ class SmartThings:
                 },
             )
         except SmartThingsCommandError as err:
+            if not any(
+                detail.code == "LimitExceeded" for detail in err.error.error.details
+            ):
+                raise
             msg = "Reached limit of subscriptions"
             raise SmartThingsSinkError(msg) from err
         return Subscription.from_json(resp)
@@ -645,7 +664,7 @@ class SmartThings:
         LOGGER.debug("Connection opened")
         self.__retry_count = 0
 
-    async def subscribe(  # noqa: PLR0912, PLR0915  # pylint: disable=too-many-statements,too-many-branches
+    async def subscribe(
         self,
         location_id: str,
         initial_subscription: Subscription | None = None,
@@ -657,7 +676,9 @@ class SmartThings:
             self.session = ClientSession()
             self._close_session = True
         session = self.session
+        subscription_id: str | None
         while True:
+            subscription_id = None
             try:
                 if using_initial:
                     assert initial_subscription is not None  # noqa: S101
@@ -673,37 +694,48 @@ class SmartThings:
                         self.new_subscription_id_callback(subscription_id)
                 await self._internal_subscribe(session, subscription_url)
                 using_initial = False
-                await self.delete_subscription(subscription_id)
+                await self._delete_subscription_if_exists(subscription_id)
             except SmartThingsSinkError:
                 # This is only triggered by creating a new one
                 # So we don't have an active one and thus don't have to delete one
                 if self.max_connections_reached_callback:
                     self.max_connections_reached_callback()
-                    break
+                break
+            except SmartThingsBlockedError:
+                # Retrying a flagged client keeps being rejected, so give up.
+                raise
             except (ClientError, ConnectionError):
                 msg = "Connection error occurred while subscribing to events"
                 LOGGER.exception(msg)
-                await asyncio.sleep(2**self.__retry_count)
-                self.__retry_count += 1
-                try:
-                    await self.delete_subscription(subscription_id)
-                except SmartThingsConnectionError:
-                    LOGGER.debug("Connection error while deleting subscription")
-                    if self.max_connections_reached_callback:
-                        self.max_connections_reached_callback()
+                await self._backoff_and_clean_up(subscription_id)
                 using_initial = False
             except Exception:  # pylint: disable=broad-except  # noqa: BLE001
                 msg = "Error occurred while subscribing to events"
                 LOGGER.exception(msg)
-                await asyncio.sleep(2**self.__retry_count)
-                self.__retry_count += 1
-                try:
-                    await self.delete_subscription(subscription_id)
-                except SmartThingsConnectionError:
-                    LOGGER.debug("Unknown error while deleting subscription")
-                    if self.max_connections_reached_callback:
-                        self.max_connections_reached_callback()
+                await self._backoff_and_clean_up(subscription_id)
                 using_initial = False
+
+    async def _backoff_and_clean_up(self, subscription_id: str | None) -> None:
+        """Wait before retrying and delete the failed subscription, if any."""
+        await asyncio.sleep(2**self.__retry_count)
+        self.__retry_count += 1
+        if subscription_id is None:
+            return
+        try:
+            await self._delete_subscription_if_exists(subscription_id)
+        except SmartThingsConnectionError:
+            LOGGER.debug("Connection error while deleting subscription")
+            if self.max_connections_reached_callback:
+                self.max_connections_reached_callback()
+
+    async def _delete_subscription_if_exists(self, subscription_id: str) -> None:
+        """Delete a subscription, treating an expired or missing one as deleted."""
+        try:
+            await self.delete_subscription(subscription_id)
+        except (SmartThingsForbiddenError, SmartThingsNotFoundError):
+            LOGGER.debug("Subscription %s already expired or deleted", subscription_id)
+            if self.new_subscription_id_callback:
+                self.new_subscription_id_callback(None)
 
     async def delete_subscription(self, subscription_id: str) -> None:
         """Delete a subscription."""

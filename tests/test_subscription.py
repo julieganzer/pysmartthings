@@ -17,6 +17,10 @@ from pysmartthings import (
     Capability,
     Lifecycle,
     SmartThings,
+    SmartThingsBlockedError,
+    SmartThingsCommandError,
+    SmartThingsRateLimitError,
+    SmartThingsServerError,
     SmartThingsSinkError,
     Subscription,
 )
@@ -139,6 +143,57 @@ async def test_create_subscription_limit_reached(
     """Test creating a subscription when the limit is reached."""
     mock_subscription_limit(responses)
     with pytest.raises(SmartThingsSinkError, match="Reached limit of subscriptions"):
+        await client.create_subscription(LOCATION_ID)
+
+
+async def test_create_subscription_other_command_error(
+    client: SmartThings,
+    responses: aiointercept,
+) -> None:
+    """Test a validation error is not mistaken for the subscription limit."""
+    responses.post(
+        SUBSCRIPTIONS_URL,
+        status=422,
+        body=orjson.dumps(  # pylint: disable=no-member
+            {
+                "requestId": "1",
+                "error": {
+                    "code": "ConstraintViolationError",
+                    "message": "The request is malformed.",
+                    "details": [
+                        {
+                            "code": "PatternError",
+                            "target": "subscriptionFilters[0].value",
+                            "message": "Invalid location ID",
+                            "details": [],
+                        }
+                    ],
+                },
+            }
+        ).decode(),
+    )
+    with pytest.raises(SmartThingsCommandError, match="PatternError"):
+        await client.create_subscription(LOCATION_ID)
+
+
+@pytest.mark.parametrize(
+    ("status", "exception"),
+    [
+        (418, SmartThingsBlockedError),
+        (429, SmartThingsRateLimitError),
+        (500, SmartThingsServerError),
+        (503, SmartThingsServerError),
+    ],
+)
+async def test_create_subscription_error_status(
+    client: SmartThings,
+    responses: aiointercept,
+    status: int,
+    exception: type[Exception],
+) -> None:
+    """Test error statuses raise instead of returning the body."""
+    responses.post(SUBSCRIPTIONS_URL, status=status)
+    with pytest.raises(exception):
         await client.create_subscription(LOCATION_ID)
 
 
@@ -423,3 +478,99 @@ async def test_removed_listener_is_not_called(
     await client.subscribe(LOCATION_ID)
 
     listener.assert_not_called()
+
+
+async def test_subscribe_limit_without_callback_stops(
+    client: SmartThings,
+    responses: aiointercept,
+) -> None:
+    """Test reaching the limit ends subscribe() even without a callback."""
+    mock_subscription_limit(responses)
+    async with asyncio.timeout(1):
+        await client.subscribe(LOCATION_ID)
+    responses.assert_called_once_with(SUBSCRIPTIONS_URL, METH_POST)
+
+
+@pytest.mark.parametrize("status", [403, 404])
+async def test_subscribe_expired_initial_subscription(
+    client: SmartThings,
+    responses: aiointercept,
+    status: int,
+) -> None:
+    """Test an expired initial subscription is dropped and a new one created."""
+    responses.get(REGISTRATION_URL, status=403)
+    responses.delete(SUBSCRIPTION_URL, status=status)
+    mock_subscription_limit(responses)
+    new_subscription_id_callback = MagicMock()
+    max_connections_reached_callback = MagicMock()
+    client.new_subscription_id_callback = new_subscription_id_callback
+    client.max_connections_reached_callback = max_connections_reached_callback
+
+    with patch("pysmartthings.smartthings.asyncio.sleep", new_callable=AsyncMock):
+        await client.subscribe(
+            LOCATION_ID,
+            initial_subscription=Subscription(
+                subscription_id=SUBSCRIPTION_ID,
+                registration_url=REGISTRATION_URL,
+                name="My Home Assistant sub",
+            ),
+        )
+
+    new_subscription_id_callback.assert_called_once_with(None)
+    responses.assert_any_call(SUBSCRIPTIONS_URL, METH_POST)
+    max_connections_reached_callback.assert_called_once_with()
+
+
+@pytest.mark.parametrize("status", [403, 404])
+async def test_subscribe_subscription_expired_before_delete(
+    client: SmartThings,
+    responses: aiointercept,
+    status: int,
+) -> None:
+    """Test a goodbye followed by a failed delete still resubscribes."""
+    mock_create_subscription(responses)
+    responses.get(REGISTRATION_URL, status=200, body=GOODBYE)
+    responses.delete(SUBSCRIPTION_URL, status=status)
+    mock_subscription_limit(responses)
+    new_subscription_id_callback = MagicMock()
+    max_connections_reached_callback = MagicMock()
+    client.new_subscription_id_callback = new_subscription_id_callback
+    client.max_connections_reached_callback = max_connections_reached_callback
+
+    await client.subscribe(LOCATION_ID)
+
+    assert [c.args for c in new_subscription_id_callback.call_args_list] == [
+        (SUBSCRIPTION_ID,),
+        (None,),
+    ]
+    max_connections_reached_callback.assert_called_once_with()
+
+
+async def test_subscribe_blocked_client_raises(
+    client: SmartThings,
+    responses: aiointercept,
+) -> None:
+    """Test a client flagged as problematic stops instead of retrying."""
+    responses.post(SUBSCRIPTIONS_URL, status=418)
+    with pytest.raises(SmartThingsBlockedError):
+        await client.subscribe(LOCATION_ID)
+    responses.assert_called_once_with(SUBSCRIPTIONS_URL, METH_POST)
+
+
+async def test_subscribe_create_error_does_not_delete(
+    client: SmartThings,
+    responses: aiointercept,
+) -> None:
+    """Test a failed create backs off without deleting a missing subscription."""
+    responses.post(SUBSCRIPTIONS_URL, status=429)
+    mock_subscription_limit(responses)
+    client.max_connections_reached_callback = MagicMock()
+
+    with patch(
+        "pysmartthings.smartthings.asyncio.sleep", new_callable=AsyncMock
+    ) as mock_sleep:
+        await client.subscribe(LOCATION_ID)
+
+    mock_sleep.assert_awaited_once_with(1)
+    with pytest.raises(AssertionError):
+        responses.assert_any_call(SUBSCRIPTION_URL, METH_DELETE)
