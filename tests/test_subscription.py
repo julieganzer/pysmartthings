@@ -7,6 +7,7 @@ import logging
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from aiohttp import ClientSession
 from aiohttp.hdrs import METH_DELETE, METH_GET, METH_POST
 from aiointercept import aiointercept
 import orjson
@@ -19,6 +20,8 @@ from pysmartthings import (
     SmartThingsSinkError,
     Subscription,
 )
+from pysmartthings.const import DEFAULT_USER_AGENT
+
 from . import load_fixture, load_json_fixture
 
 from .const import HEADERS, MOCK_URL
@@ -90,6 +93,42 @@ async def test_create_subscription(
                 }
             ],
         },
+    )
+
+
+async def test_create_subscription_custom_user_agent(
+    client: SmartThings,
+    responses: aiointercept,
+) -> None:
+    """Test a configured user agent is sent instead of the default."""
+    mock_create_subscription(responses)
+    client.user_agent = "MyIntegration/1.0.0 (contact: dev@example.com)"
+    await client.create_subscription(LOCATION_ID)
+    responses.assert_called_once_with(
+        SUBSCRIPTIONS_URL,
+        METH_POST,
+        headers={
+            **HEADERS,
+            "User-Agent": "MyIntegration/1.0.0 (contact: dev@example.com)",
+        },
+    )
+
+
+async def test_create_subscription_session_user_agent(
+    responses: aiointercept,
+) -> None:
+    """Test a user agent already set on the session is not overridden."""
+    mock_create_subscription(responses)
+    async with (
+        ClientSession(headers={"User-Agent": "FromSession/1.0"}) as session,
+        SmartThings(session=session) as client,
+    ):
+        client.authenticate("token")
+        await client.create_subscription(LOCATION_ID)
+    responses.assert_called_once_with(
+        SUBSCRIPTIONS_URL,
+        METH_POST,
+        headers={**HEADERS, "User-Agent": "FromSession/1.0"},
     )
 
 
@@ -186,7 +225,11 @@ async def test_subscribe_dispatches_events(
     responses.assert_called_with(
         REGISTRATION_URL,
         METH_GET,
-        headers={"Authorization": "Bearer token", "Accept": "text/event-stream"},
+        headers={
+            "Authorization": "Bearer token",
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Accept": "text/event-stream",
+        },
     )
     assert [c.args for c in new_subscription_id_callback.call_args_list] == [
         (SUBSCRIPTION_ID,),

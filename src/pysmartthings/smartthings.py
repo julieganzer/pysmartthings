@@ -7,11 +7,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Self, cast
 
 from aiohttp import ClientConnectionError, ClientError, ClientSession, ClientTimeout
-from aiohttp.hdrs import METH_DELETE, METH_GET, METH_POST, METH_PUT
+from aiohttp.hdrs import METH_DELETE, METH_GET, METH_POST, METH_PUT, USER_AGENT
 import orjson
 from yarl import URL
 
-from .const import API_BASE, LOGGER, SSE_READ_TIMEOUT
+from .const import API_BASE, DEFAULT_USER_AGENT, LOGGER, SSE_READ_TIMEOUT
 from .exceptions import (
     SmartThingsAuthenticationFailedError,
     SmartThingsCommandError,
@@ -63,6 +63,7 @@ class SmartThings:
     """Define a class for interacting with the SmartThings Cloud API."""
 
     request_timeout: int = 10
+    user_agent: str | None = None
     _close_session: bool = False
     _token: str | None = None
     session: ClientSession | None = None
@@ -96,10 +97,19 @@ class SmartThings:
         """Authenticate the user with a token."""
         self._token = token
 
+    def _get_user_agent_header(self) -> dict[str, str]:
+        """Get the User-Agent header, unless the session already sets one."""
+        if self.user_agent:
+            return {USER_AGENT: self.user_agent}
+        if self.session is not None and USER_AGENT in self.session.headers:
+            return {}
+        return {USER_AGENT: DEFAULT_USER_AGENT}
+
     def _get_headers(self) -> dict[str, str]:
         """Get headers for requests."""
         return {
             "Authorization": f"Bearer {self._token}",
+            **self._get_user_agent_header(),
         }
 
     async def _request(
@@ -363,6 +373,7 @@ class SmartThings:
         headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {personal_access_token}",
+            **self._get_user_agent_header(),
         }
 
         await self.__internal_request(METH_DELETE, url, headers)
@@ -380,6 +391,7 @@ class SmartThings:
         headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {personal_access_token}",
+            **self._get_user_agent_header(),
         }
 
         resp = await self.__internal_request(METH_GET, url, headers)
@@ -398,6 +410,7 @@ class SmartThings:
         headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {personal_access_token}",
+            **self._get_user_agent_header(),
         }
 
         await self.__internal_request(METH_DELETE, url, headers)
